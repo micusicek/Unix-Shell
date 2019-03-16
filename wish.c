@@ -3,19 +3,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #define ARRAY_LENGTH 1024
 
-struct ParsedLine {
-	char path[ARRAY_LENGTH];
+struct CmdSpecs {
+	char cmd[ARRAY_LENGTH];
 	char *args[ARRAY_LENGTH];
 };
 
+char *globalPath[ARRAY_LENGTH] = { 0 };
+
 void exitWithError(void)
 {
-	char *error_message = "An error has occurred\n";
-	fwrite(error_message, strlen(error_message), 1, stdout); 
+	char *message = "An error has occurred\n";
+	fwrite(message, strlen(message), 1, stdout); 
 	exit(1);
 }
 
@@ -25,40 +29,73 @@ void printPrompt(void)
 	fwrite(prompt, strlen(prompt), 1, stdout);
 }
 
-void freeParsedLineArgs(struct ParsedLine *parsedLine)
+void freeParsedLineArgs(struct CmdSpecs *cmdSpecs)
 {
-	// TODO
+	for(int i = 0; (cmdSpecs->args[i] != NULL) && (i < ARRAY_LENGTH); i++) {
+		free(cmdSpecs->args[i]);
+		cmdSpecs->args[i] = NULL;
+	}
 }
 
-void parseLine(char *line, struct ParsedLine *parsedLine)
+void parseLine(char *line, struct CmdSpecs *cmdSpecs)
 {
 	char *buffer = strdup(line);
 	char *workingBuffer = buffer;
 	char *found;
-	int i = 0;
+	int i;
 
-	for(i=0; (found = strsep(&workingBuffer, " ")) != NULL; i++) {
-		parsedLine->args[i] = strdup(found);
-		// i++;
+	for(i = 0; (found = strsep(&workingBuffer, " ")) != NULL; i++) {
+		cmdSpecs->args[i] = strdup(found);
 	}
 
-	parsedLine->args[i] = NULL;
-	strcpy(parsedLine->path, parsedLine->args[0]);
+	cmdSpecs->args[i] = NULL;
+	strcpy(cmdSpecs->cmd, cmdSpecs->args[0]);
 
 	free(buffer);
 }
 
-void executeCd(struct ParsedLine *parsedLine)
+char *findInPath(char *cmd)
 {
-	printf("executeCd: TODO!\n");
+	char buffer[ARRAY_LENGTH];
+	struct stat sb;
+
+	for(int i = 0; (globalPath[i] != NULL) && (i < ARRAY_LENGTH); i++) {
+		sprintf(buffer, "%s/%s", globalPath[i], cmd);
+		if((stat(buffer, &sb) == 0) && (sb.st_mode & S_IXUSR)) {
+			return strdup(buffer);
+		}
+	}
+
+	return cmd; // not found in path so just return cmd itself, might be executable
 }
 
-void executePath(struct ParsedLine *parsedLine)
+void executeCd(struct CmdSpecs *cmdSpecs)
 {
-	printf("executePath: TODO!\n");
+	// cd must have one argument
+	if((cmdSpecs->args[1] == NULL) || (cmdSpecs->args[2] != NULL)) {
+		exitWithError();
+	}
+
+	if(chdir(cmdSpecs->args[1]) != 0) {
+		exitWithError();
+	}
 }
 
-void executeExternal(struct ParsedLine *parsedLine)
+void executePath(struct CmdSpecs *cmdSpecs)
+{
+	// clear old globalPath
+	for(int i = 0; (globalPath[i] != NULL) && (i < ARRAY_LENGTH); i++) {
+		free(globalPath[i]);
+		globalPath[i] = NULL;
+	}
+
+	// add new globalPath (ignore first element, it's command name)
+	for(int i = 1; cmdSpecs->args[i] != NULL; i++) {
+		globalPath[i-1] = strdup(cmdSpecs->args[i]);
+	}
+}
+
+void executeExternal(struct CmdSpecs *cmdSpecs)
 {
 	int childStatus;
 	pid_t pid = fork();
@@ -71,30 +108,29 @@ void executeExternal(struct ParsedLine *parsedLine)
 			exitWithError();
 		}
 	} else {
-		execv(parsedLine->path, parsedLine->args);
+		execv(findInPath(cmdSpecs->cmd), cmdSpecs->args);
 		exit(1);
 	}
 }
 
 // returns 1 if exit requested, 0 otherwise
+// TODO: add support for &&
 int executeLine(char *line)
 {
-	struct ParsedLine parsedLine;
-	parseLine(line, &parsedLine);
+	struct CmdSpecs cmdSpecs;
+	parseLine(line, &cmdSpecs);
 
-	// printf("executeLine: parsedLine.path [%s]\n", parsedLine.path);
-
-	if(strcmp(parsedLine.path, "exit") == 0) {
+	if(strcmp(cmdSpecs.cmd, "exit") == 0) {
 		return 1;
-	} else if(strcmp(parsedLine.path, "cd") == 0) {
-		executeCd(&parsedLine);
-	} else if(strcmp(parsedLine.path, "path") == 0) {
-		executePath(&parsedLine);
+	} else if(strcmp(cmdSpecs.cmd, "cd") == 0) {
+		executeCd(&cmdSpecs);
+	} else if(strcmp(cmdSpecs.cmd, "path") == 0) {
+		executePath(&cmdSpecs);
 	} else {
-		executeExternal(&parsedLine);
+		executeExternal(&cmdSpecs);
 	}
 
-	freeParsedLineArgs(&parsedLine);
+	freeParsedLineArgs(&cmdSpecs);
 
 	return 0;
 }
@@ -105,7 +141,7 @@ void run(void)
 	size_t dummyLength = 0;
 	ssize_t lineLength;
 	
-	int isInteractive = 1; // TODO: get as an argument
+	int isInteractive = 1;
 	int done = 0;
 
 	while(!done) {
