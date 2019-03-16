@@ -3,15 +3,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
+
+#define ARRAY_LENGTH 1024
 
 struct ParsedLine {
-	char *path;
-	char *args[];
+	char path[ARRAY_LENGTH];
+	char *args[ARRAY_LENGTH];
 };
 
 void exitWithError(void)
 {
-	char error_message[30] = "An error has occurred\n";
+	char *error_message = "An error has occurred\n";
 	fwrite(error_message, strlen(error_message), 1, stdout); 
 	exit(1);
 }
@@ -22,9 +25,55 @@ void printPrompt(void)
 	fwrite(prompt, strlen(prompt), 1, stdout);
 }
 
+void freeParsedLineArgs(struct ParsedLine *parsedLine)
+{
+	// TODO
+}
+
 void parseLine(char *line, struct ParsedLine *parsedLine)
 {
-	// TODO: implement!
+	char *buffer = strdup(line);
+	char *workingBuffer = buffer;
+	char *found;
+	int i = 0;
+
+	for(i=0; (found = strsep(&workingBuffer, " ")) != NULL; i++) {
+		parsedLine->args[i] = strdup(found);
+		// i++;
+	}
+
+	parsedLine->args[i] = NULL;
+	strcpy(parsedLine->path, parsedLine->args[0]);
+
+	free(buffer);
+}
+
+void executeCd(struct ParsedLine *parsedLine)
+{
+	printf("executeCd: TODO!\n");
+}
+
+void executePath(struct ParsedLine *parsedLine)
+{
+	printf("executePath: TODO!\n");
+}
+
+void executeExternal(struct ParsedLine *parsedLine)
+{
+	int childStatus;
+	pid_t pid = fork();
+
+	if(pid == -1) {
+		exitWithError();
+	} else if(pid > 0) {
+		waitpid(pid, &childStatus, 0);
+		if(childStatus != 0) {
+			exitWithError();
+		}
+	} else {
+		execv(parsedLine->path, parsedLine->args);
+		exit(1);
+	}
 }
 
 // returns 1 if exit requested, 0 otherwise
@@ -33,15 +82,20 @@ int executeLine(char *line)
 	struct ParsedLine parsedLine;
 	parseLine(line, &parsedLine);
 
+	// printf("executeLine: parsedLine.path [%s]\n", parsedLine.path);
+
 	if(strcmp(parsedLine.path, "exit") == 0) {
 		return 1;
 	} else if(strcmp(parsedLine.path, "cd") == 0) {
-		// TODO: implement cd
+		executeCd(&parsedLine);
 	} else if(strcmp(parsedLine.path, "path") == 0) {
-		// TODO: implement cd
+		executePath(&parsedLine);
 	} else {
-		// TODO: implement external command
+		executeExternal(&parsedLine);
 	}
+
+	freeParsedLineArgs(&parsedLine);
+
 	return 0;
 }
 
@@ -56,12 +110,11 @@ void run(void)
 
 	while(!done) {
 		if(isInteractive) { printPrompt(); }
-		// TODO: read line
 		lineLength = getline(&line, &dummyLength, stdin);
 		if(lineLength == -1) {
 			done = 1;
 		} else {
-			// TODO: execute!
+			line[lineLength-1] = 0; // get rid of '\n'
 			done = executeLine(line);
 		}
 	}
@@ -69,41 +122,15 @@ void run(void)
 
 int main(int argc, char **argv)
 {
-	// TODO: read args (0 or 1)
 	switch(argc) {
 		case 1: // interactive
 			run();
 			break;
 		case 2: // batch
+			// TODO: implement
 			break;
 		default: // error
 			exitWithError();
 	}
-	// TODO: batch or interactive mode
-	// TODO: run main loop (read file or stdin)
-
-#ifdef wlierjgneorjgnoire
-	char *line = NULL;
-	size_t linesize = 0;
-	ssize_t linelen;
-
-	fwrite("wish> ", 6, 1, stdout);
-
-	while ((linelen = getline(&line, &linesize, stdin)) != -1) {
-		if (strncmp("exit", line, 4) == 0) {
-			// user wants to exit
-			exit(0);
-		}
-		fwrite(line, linelen, 1, stdout);
-
-		// fork
-		// if child, exec
-		// if parent, wait
-	}
-
-	free(line);
-	if (ferror(stdin))
-		err(1, "getline");
-#endif // wlierjgneorjgnoire
 }
 
