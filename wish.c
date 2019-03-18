@@ -7,12 +7,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-#define ARRAY_LENGTH 1024
-
-struct CmdSpecs {
-	char cmd[ARRAY_LENGTH];
-	char *args[ARRAY_LENGTH];
-};
+#define ARRAY_LENGTH 20
 
 char *globalPath[ARRAY_LENGTH] = { 0 };
 
@@ -29,31 +24,105 @@ void printPrompt(void)
 	fwrite(prompt, strlen(prompt), 1, stdout);
 }
 
-void freeParsedLineArgs(struct CmdSpecs *cmdSpecs)
+// holds arrays of strings (char pointers), last one is NULL
+// suitable for usage with execv
+struct Strings {
+	char **data;
+	int maxSize;
+	int currentSize;
+};
+
+struct Strings *stringsNew(int maxSize)
 {
-	for(int i = 0; (cmdSpecs->args[i] != NULL) && (i < ARRAY_LENGTH); i++) {
-		free(cmdSpecs->args[i]);
-		cmdSpecs->args[i] = NULL;
+	struct Strings *s = (struct Strings *) malloc(sizeof(struct Strings));
+	s->data = (char **)malloc((maxSize + 1) * sizeof(char*)); // space for NULL at the end
+	s->maxSize = maxSize;
+	s->currentSize = 0;
+	for(int i = 0; i < maxSize; i++) { s->data[i] = NULL; }
+	return s;
+}
+
+void stringsDelete(struct Strings *strings)
+{
+	for(int i = 0; i < strings->maxSize; i++) {
+		if(strings->data[i] != NULL) {
+			free(strings->data[i]);
+		}
+	}
+	free(strings->data);
+	free(strings);
+}
+
+void stringsAppend(struct Strings *strings, char *s)
+{
+	if(strings->currentSize == strings->maxSize) {
+		exitWithError();
+	}
+	strings->data[strings->currentSize++] = strdup(s);
+}
+
+void stringsPrint(struct Strings *strings)
+{
+	for(int i = 0; i < strings->currentSize; i++) {
+		printf("[%s]", strings->data[i]);
 	}
 }
 
-void parseLine(char *line, struct CmdSpecs *cmdSpecs)
+// holds commands suitable for execv
+struct Commands {
+	struct Strings *commands;
+	int maxSize;
+	int current;
+}
+
+// add new, delete, append, print
+
+#ifdef ergnsepognpreotg
+struct Command {
+	// char cmd[ARRAY_LENGTH];
+	char *args[ARRAY_LENGTH];
+};
+
+void freeCommand(struct Command *command)
+{
+	for(int i = 0; (command->args[i] != NULL) && (i < ARRAY_LENGTH); i++) {
+		free(command->args[i]);
+		command->args[i] = NULL;
+	}
+}
+#endif // ergnsepognpreotg
+
+void parseLine(char *line, struct Command *commands)
 {
 	char *buffer = strdup(line);
 	char *workingBuffer = buffer;
-	char *found;
-	int i;
+	char *token;
+	int commandIndex, argIndex;
+	struct Command *currentCommand;
 
-	for(i = 0; (found = strsep(&workingBuffer, " ")) != NULL; i++) {
-		cmdSpecs->args[i] = strdup(found);
+	for(
+		commandIndex = argIndex = 0, currentCommand = &commands[0];
+		(token = strsep(&workingBuffer, " ")) != NULL;
+	) {
+		if(strcmp(token, "&&") == 0) {
+			// next command
+			currentCommand->args[argIndex] = NULL;
+			argIndex = 0;
+			commandIndex++;
+			currentCommand = &commands[commandIndex];
+		} else {
+			// add argument
+			currentCommand->args[argIndex] = strdup(token);
+			argIndex++;
+		}
 	}
 
-	cmdSpecs->args[i] = NULL;
-	strcpy(cmdSpecs->cmd, cmdSpecs->args[0]);
+	commands[commandIndex].args[0] = NULL;
 
 	free(buffer);
 }
 
+// caller must free return value
 char *findInPath(char *cmd)
 {
 	char buffer[ARRAY_LENGTH];
@@ -66,22 +135,22 @@ char *findInPath(char *cmd)
 		}
 	}
 
-	return cmd; // not found in path so just return cmd itself, might be executable
+	return strdup(cmd); // not found in path so just return cmd itself, might be executable
 }
 
-void executeCd(struct CmdSpecs *cmdSpecs)
+void executeCd(struct Command *command)
 {
 	// cd must have one argument
-	if((cmdSpecs->args[1] == NULL) || (cmdSpecs->args[2] != NULL)) {
+	if((command->args[1] == NULL) || (command->args[2] != NULL)) {
 		exitWithError();
 	}
 
-	if(chdir(cmdSpecs->args[1]) != 0) {
+	if(chdir(command->args[1]) != 0) {
 		exitWithError();
 	}
 }
 
-void executePath(struct CmdSpecs *cmdSpecs)
+void executePath(struct Command *command)
 {
 	// clear old globalPath
 	for(int i = 0; (globalPath[i] != NULL) && (i < ARRAY_LENGTH); i++) {
@@ -90,12 +159,12 @@ void executePath(struct CmdSpecs *cmdSpecs)
 	}
 
 	// add new globalPath (ignore first element, it's command name)
-	for(int i = 1; cmdSpecs->args[i] != NULL; i++) {
-		globalPath[i-1] = strdup(cmdSpecs->args[i]);
+	for(int i = 1; command->args[i] != NULL; i++) {
+		globalPath[i-1] = strdup(command->args[i]);
 	}
 }
 
-void executeExternal(struct CmdSpecs *cmdSpecs)
+void executeExternal(struct Command *command)
 {
 	int childStatus;
 	pid_t pid = fork();
@@ -108,65 +177,95 @@ void executeExternal(struct CmdSpecs *cmdSpecs)
 			exitWithError();
 		}
 	} else {
-		execv(findInPath(cmdSpecs->cmd), cmdSpecs->args);
+		execv(findInPath(command->args[0]), command->args);
 		exit(1);
 	}
 }
 
-// returns 1 if exit requested, 0 otherwise
-// TODO: add support for &&
-int executeLine(char *line)
-{
-	struct CmdSpecs cmdSpecs;
-	parseLine(line, &cmdSpecs);
-
-	if(strcmp(cmdSpecs.cmd, "exit") == 0) {
-		return 1;
-	} else if(strcmp(cmdSpecs.cmd, "cd") == 0) {
-		executeCd(&cmdSpecs);
-	} else if(strcmp(cmdSpecs.cmd, "path") == 0) {
-		executePath(&cmdSpecs);
+void executeCommand(struct Command *cmd) {
+	if(strcmp(cmd->args[0], "exit") == 0) {
+		exit(0);
+	} else if(strcmp(cmd->args[0], "cd") == 0) {
+		executeCd(cmd);
+	} else if(strcmp(cmd->args[0], "path") == 0) {
+		executePath(cmd);
 	} else {
-		executeExternal(&cmdSpecs);
+		executeExternal(cmd);
 	}
-
-	freeParsedLineArgs(&cmdSpecs);
-
-	return 0;
 }
 
-void run(void)
+// void executeCommands(
+
+void runLine(char *line)
+{
+	// test Strings, Commands BEGIN
+	// strings
+	struct Strings *s = stringsNew(3);
+	stringsAppend(s, "one");
+	stringsAppend(s, "two");
+	stringsAppend(s, "three");
+	// stringsAppend(s, "four"); // causes error, out of bounds
+	stringsPrint(s);
+	// commands
+
+	exit(0);
+	// test Strings, Commands END
+
+	// ignore emnpty lines
+	if(strcmp(line, "") == 0) {
+		return;
+	}
+
+	struct Command commands[ARRAY_LENGTH];
+	parseLine(line, commands);
+
+	for(int i = 0; (commands[i].args[0] != NULL) && (i < ARRAY_LENGTH); i++) {
+		executeCommand(&commands[i]);
+		// TODO wait for all children
+		freeCommand(&commands[i]);
+	}
+}
+
+void run(FILE *f)
 {
 	char *line = NULL;
 	size_t dummyLength = 0;
 	ssize_t lineLength;
 	
-	int isInteractive = 1;
+	int isInteractive = (f == stdin) ? 1 : 0;
 	int done = 0;
 
-	while(!done) {
+	while(1) {
 		if(isInteractive) { printPrompt(); }
-		lineLength = getline(&line, &dummyLength, stdin);
+		lineLength = getline(&line, &dummyLength, f);
 		if(lineLength == -1) {
-			done = 1;
+			exit(0);
 		} else {
-			line[lineLength-1] = 0; // get rid of '\n'
-			done = executeLine(line);
+			line[strlen(line)-1] = 0; // get rid of '\n'
+			runLine(line);
+			free(line);
+			line = NULL;
 		}
+	}
+}
+
+void runBatch(char *batchFilename)
+{
+	FILE *f = fopen(batchFilename, "r");
+	if(f == NULL) {
+		exitWithError();
+	} else {
+		run(f);
+		fclose(f);
 	}
 }
 
 int main(int argc, char **argv)
 {
 	switch(argc) {
-		case 1: // interactive
-			run();
-			break;
-		case 2: // batch
-			// TODO: implement
-			break;
-		default: // error
-			exitWithError();
+		case 1: run(stdin); break;
+		case 2: runBatch(argv[1]); break;
+		default: exitWithError();
 	}
 }
 

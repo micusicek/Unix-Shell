@@ -1,0 +1,6 @@
+path /bin
+echo Testing wish
+ls -l test
+cd test
+ls -l .
+echo End of testing wish
